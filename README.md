@@ -80,6 +80,28 @@ python cron_monitor.py -c /path/to/config.json
 python cron_monitor.py --init
 ```
 
+## Logging
+
+The monitor uses Python's built-in logging module. All output is sent to stderr with timestamps and log levels:
+
+```
+2026-03-05 10:30:00 - INFO - Cron Monitor - 2026-03-05 10:30:00
+2026-03-05 10:30:00 - INFO - [✓] backup_daily: Last run 2.5 hours ago
+2026-03-05 10:30:00 - INFO - Summary: 0 overdue, 0 warnings
+```
+
+To enable debug output, set the `LOGLEVEL` environment variable:
+
+```bash
+LOGLEVEL=DEBUG python cron_monitor.py
+```
+
+To redirect logs to a file:
+
+```bash
+python cron_monitor.py 2>> /var/log/cron-monitor.log
+```
+
 ## Exit codes
 
 - `0`: All jobs OK

@@ -7,6 +7,7 @@ Monitors cron jobs by checking their last execution time and alerts if they're o
 import os
 import sys
 import json
+import logging
 import smtplib
 import argparse
 from datetime import datetime, timedelta
@@ -19,12 +20,19 @@ CRON_LOG_DIR = "/var/log"
 DEFAULT_CONFIG_FILE = "cron_config.json"
 DEFAULT_STATE_FILE = "cron_state.json"
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
+
 
 def load_config(config_path):
     """Load job configuration from JSON file."""
     if not os.path.exists(config_path):
-        print(f"Config file not found: {config_path}")
-        print("Creating default configuration...")
+        logger.warning("Config file not found: %s", config_path)
+        logger.info("Creating default configuration...")
         default_config = {
             "jobs": [
                 {
@@ -52,7 +60,7 @@ def load_config(config_path):
         with open(config_path, "w") as f:
             json.dump(default_config, f, indent=2)
         return default_config
-    
+
     with open(config_path, "r") as f:
         return json.load(f)
 
@@ -61,7 +69,7 @@ def load_state(state_path):
     """Load previous run state from file."""
     if not os.path.exists(state_path):
         return {"last_check": None, "job_states": {}}
-    
+
     with open(state_path, "r") as f:
         return json.load(f)
 
@@ -77,7 +85,7 @@ def find_log_files(log_pattern, search_dirs=None):
     """Find log files matching the pattern in common log directories."""
     if search_dirs is None:
         search_dirs = [CRON_LOG_DIR, "/var/log/cron", os.path.expanduser("~")]
-    
+
     matching_files = []
     for search_dir in search_dirs:
         if not os.path.exists(search_dir):
@@ -89,7 +97,7 @@ def find_log_files(log_pattern, search_dirs=None):
                         matching_files.append(os.path.join(root, filename))
         except PermissionError:
             continue
-    
+
     return matching_files
 
 
@@ -105,7 +113,7 @@ def get_last_modification_time(filepath):
 def check_job_status(job, state):
     """Check if a cron job is running on schedule."""
     log_files = find_log_files(job["log_pattern"])
-    
+
     if not log_files:
         return {
             "name": job["name"],
@@ -113,16 +121,16 @@ def check_job_status(job, state):
             "message": f"No log files found matching pattern: {job['log_pattern']}",
             "last_run": None
         }
-    
+
     latest_time = None
     latest_file = None
-    
+
     for log_file in log_files:
         mtime = get_last_modification_time(log_file)
         if mtime and (latest_time is None or mtime > latest_time):
             latest_time = mtime
             latest_file = log_file
-    
+
     if latest_time is None:
         return {
             "name": job["name"],
@@ -130,13 +138,13 @@ def check_job_status(job, state):
             "message": "Could not determine last modification time",
             "last_run": None
         }
-    
+
     now = datetime.now()
     time_since_last_run = now - latest_time
     hours_since_last_run = time_since_last_run.total_seconds() / 3600
-    
+
     threshold = job.get("alert_threshold_hours", job["expected_interval_hours"] * 1.2)
-    
+
     if hours_since_last_run > threshold:
         status = "overdue"
         message = f"Job is {hours_since_last_run:.1f} hours overdue (threshold: {threshold}h)"
@@ -146,7 +154,7 @@ def check_job_status(job, state):
     else:
         status = "ok"
         message = f"Last run {hours_since_last_run:.1f} hours ago"
-    
+
     return {
         "name": job["name"],
         "status": status,
@@ -160,22 +168,22 @@ def check_job_status(job, state):
 def send_email_alert(config, job_results):
     """Send email alert for failed/overdue jobs."""
     email_config = config.get("email", {})
-    
+
     if not email_config.get("smtp_server"):
-        print("Email not configured. Skipping alert.")
+        logger.warning("Email not configured. Skipping alert.")
         return False
-    
+
     overdue_jobs = [j for j in job_results if j["status"] in ("overdue", "warning")]
-    
+
     if not overdue_jobs:
         return False
-    
+
     subject = f"[Cron Alert] {len(overdue_jobs)} job(s) require attention"
-    
+
     body = "Cron Job Monitor Alert\n"
     body += "=" * 40 + "\n\n"
     body += f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-    
+
     for job in overdue_jobs:
         body += f"Job: {job['name']}\n"
         body += f"Status: {job['status'].upper()}\n"
@@ -185,13 +193,13 @@ def send_email_alert(config, job_results):
         if job.get("log_file"):
             body += f"Log File: {job['log_file']}\n"
         body += "\n"
-    
+
     msg = MIMEMultipart()
     msg["From"] = email_config["sender"]
     msg["To"] = ", ".join(email_config["recipients"])
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain"))
-    
+
     try:
         if email_config.get("username") and email_config.get("password"):
             server = smtplib.SMTP(email_config["smtp_server"], email_config["smtp_port"])
@@ -203,11 +211,11 @@ def send_email_alert(config, job_results):
             server = smtplib.SMTP(email_config["smtp_server"], email_config["smtp_port"])
             server.send_message(msg)
             server.quit()
-        
-        print(f"Alert email sent to {email_config['recipients']}")
+
+        logger.info("Alert email sent to %s", email_config["recipients"])
         return True
     except Exception as e:
-        print(f"Failed to send email: {e}")
+        logger.error("Failed to send email: %s", e)
         return False
 
 
@@ -215,33 +223,33 @@ def run_monitor(config_path, state_path, send_alerts=False):
     """Run the cron job monitor."""
     config = load_config(config_path)
     state = load_state(state_path)
-    
-    print(f"Cron Monitor - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 50)
-    
+
+    logger.info("Cron Monitor - %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    logger.info("=" * 50)
+
     job_results = []
-    
+
     for job in config.get("jobs", []):
         result = check_job_status(job, state)
         job_results.append(result)
-        
+
         status_icon = {"ok": "✓", "warning": "⚠", "overdue": "✗", "unknown": "?"}.get(
             result["status"], "?"
         )
-        print(f"[{status_icon}] {result['name']}: {result['message']}")
-    
-    print("=" * 50)
-    
+        logger.info("[%s] %s: %s", status_icon, result["name"], result["message"])
+
+    logger.info("=" * 50)
+
     if send_alerts:
         send_email_alert(config, job_results)
-    
+
     save_state(state_path, state)
-    
+
     overdue_count = sum(1 for j in job_results if j["status"] == "overdue")
     warning_count = sum(1 for j in job_results if j["status"] == "warning")
-    
-    print(f"\nSummary: {overdue_count} overdue, {warning_count} warnings")
-    
+
+    logger.info("Summary: %d overdue, %d warnings", overdue_count, warning_count)
+
     return overdue_count + warning_count
 
 
@@ -265,12 +273,12 @@ def init_config(config_path):
             "password": ""
         }
     }
-    
+
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
-    
-    print(f"Configuration file created: {config_path}")
-    print("Edit this file to configure your cron jobs and email settings.")
+
+    logger.info("Configuration file created: %s", config_path)
+    logger.info("Edit this file to configure your cron jobs and email settings.")
 
 
 def main():
@@ -297,13 +305,13 @@ def main():
         action="store_true",
         help="Initialize configuration file"
     )
-    
+
     args = parser.parse_args()
-    
+
     if args.init:
         init_config(args.config)
         sys.exit(0)
-    
+
     exit_code = run_monitor(args.config, args.state, send_alerts=args.alert)
     sys.exit(0 if exit_code == 0 else 1)
 
